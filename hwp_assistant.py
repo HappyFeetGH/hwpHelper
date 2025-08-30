@@ -4,6 +4,8 @@ import json
 import sys
 import os
 import re
+import win32clipboard as cb, win32con
+
 
 class HWPAssistant:
     def __init__(self):
@@ -147,60 +149,90 @@ class HWPAssistant:
         except Exception as e:
             print(f"❌ Gemini 호출 오류: {e}"); return None
 
-    def insert_table(self, md_table):
-        """수정된 표 삽입 메서드 - 올바른 HWP API 사용"""
-        if not self.is_opened or not md_table: 
-            return False
-        
-        # 마크다운 테이블 파싱
-        lines = md_table.strip().split('\n')
-        lines = [line for line in lines if not re.match(r'^\s*\|-+', line)]  # 헤더 구분선 제거
-        table_data = []
-        
-        for line in lines:
-            if line.strip() and '|' in line:
-                cells = [cell.strip() for cell in line.strip().strip('|').split('|')]
-                table_data.append(cells)
-        
-        if not table_data: 
-            print("⚠️ 마크다운 표 데이터를 파싱할 수 없습니다.")
-            return False
-        
+    
+    def move_caret_right(self):
+        """커서를 오른쪽으로 한 칸 이동 (블록 선택 해제 효과)"""
         try:
-            rows, cols = len(table_data), len(table_data[0])
-            print(f"📊 {rows}행 {cols}열 표를 생성합니다...")
+            return self.hwp.HAction.Run("MoveRight")
+        except Exception as e:
+            print(f"❌ 커서 오른쪽 이동 실패: {e}")
+            return False
+
+    def move_caret_down(self):
+        """커서를 아래로 한 줄 이동 (블록 선택 해제 효과)"""
+        try:
+            return self.hwp.HAction.Run("MoveDown")
+        except Exception as e:
+            print(f"❌ 커서 아래 이동 실패: {e}")
+            return False
+
+    
+    def _set_clip(self, text: str):
+        """클립보드에 유니코드 텍스트 설정"""
+        cb.OpenClipboard()
+        cb.EmptyClipboard()
+        cb.SetClipboardData(win32con.CF_UNICODETEXT, text)
+        cb.CloseClipboard()
+
+
+    def insert_table(self, markdown_table: str) -> bool:
+        """마크다운 표를 HWP 문서에 삽입"""
+        if not self.is_opened or not markdown_table:
+            return False
+
+        # 1) 마크다운 파싱
+        lines = [line.strip() for line in markdown_table.strip().split('\n') if line.strip()]
+        
+        if len(lines) > 1 and lines[1].lstrip().startswith('|') and '-' in lines[1]:
+            lines.pop(1)
+
+        table_data = []
+        for line in lines:
+            if line.startswith('|') and line.endswith('|'):
+                line = line[1:-1]
+            cells = [cell.strip() for cell in line.split('|')]
+            if any(cells):
+                table_data.append(cells)
+
+        rows = len(table_data)
+        cols = max(len(r) for r in table_data) if rows > 0 else 0
+
+        if rows * cols == 0:
+            print("❌ 표 데이터 파싱 실패")
+            return False
+
+        try:
+            self.move_caret_right()
+            # 2) 표 생성 (self.hwp 사용!)
+            act = self.hwp.CreateAction("TableCreate")
+            pset = act.CreateSet()
+            act.GetDefault(pset)
             
-            # ✨ 수정된 표 생성 코드 ✨
-            pset = self.hwp.HParameterSet.HTableCreation  # HTableCreate → HTableCreation
-            self.hwp.HAction.GetDefault("TableCreate", pset.HSet)
-            pset.Rows = rows
-            pset.Cols = cols
-            pset.WidthType = 0  # 단에 맞춤
-            pset.HeightType = 0  # 자동 높이
-            self.hwp.HAction.Execute("TableCreate", pset.HSet)
+            pset.SetItem("Rows", rows)
+            pset.SetItem("Cols", cols)
+            pset.SetItem("WidthType", 2)
+            pset.SetItem("HeightType", 0)
             
-            # 각 셀에 데이터 입력
-            for r, row_data in enumerate(table_data):
-                for c, cell_data in enumerate(row_data):
-                    # 셀 이동 (첫 번째 셀부터 시작)
-                    if r == 0 and c == 0:
-                        pass  # 이미 첫 번째 셀에 위치
-                    elif c == 0:
-                        self.hwp.Run("TableLowerCell")  # 다음 행으로
-                    else:
-                        self.hwp.Run("TableRightCell")  # 다음 열로
-                    
-                    # 셀에 텍스트 입력
-                    if cell_data:
-                        self.hwp.HAction.GetDefault("InsertText", self.hwp.HParameterSet.HInsertText.HSet)
-                        self.hwp.HParameterSet.HInsertText.Text = str(cell_data)
-                        self.hwp.HAction.Execute("InsertText", self.hwp.HParameterSet.HInsertText.HSet)
-            
-            # 표 밖으로 나가기
-            self.hwp.Run("CloseEx")
-            print("✅ 표가 성공적으로 삽입되었습니다.")
+            act.Execute(pset)
+
+            # 3) 행 단위 데이터 입력 (self.hwp 사용!)
+            for r, row in enumerate(table_data):
+                self.hwp.HAction.Run("TableCellBlockRow")
+                
+                padded_row = row + [""] * (cols - len(row))
+                row_text = "\t".join(padded_row)
+                
+                self._set_clip(row_text)
+                self.hwp.HAction.Run("Paste")
+                
+                if r < rows - 1:
+                    self.hwp.HAction.Run("TableLowerCell")
+
+            # 4) 표 편집 모드 종료 (self.hwp 사용!)
+            self.hwp.HAction.Run("Cancel")
+            print(f"✅ {rows}×{cols} 표 삽입 완료!")
             return True
-            
+
         except Exception as e:
             print(f"❌ 표 삽입 실패: {e}")
             return False
