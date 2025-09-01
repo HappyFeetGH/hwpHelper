@@ -102,45 +102,67 @@ class HWPAssistant:
         
         return None
 
-    def call_gemini(self, user_request, selected_text):
-        context_files = re.findall(r'@([^\s]+)', user_request)
-        additional_context = ""
+    def call_gemini(self, user_request, context_data, mode="default"):
+        """
+        다양한 작업 모드를 지원하는 통합 Gemini 호출 메서드.
+
+        Args:
+            user_request (str): 사용자의 원본 요청 문자열.
+            context_data (str): AI가 참고할 주된 데이터 (선택된 텍스트, 문서 전체 등).
+            mode (str): 작업 모드 ('default', 'template_analysis', 'template_apply').
+        """
         
+        # --- 1. 시스템 지침(Instruction) 결정 ---
+        instruction_map = {
+            "template_analysis": "instructions/template_analysis.md",
+            "template_apply": "instructions/template_application.md",
+            "default": "instructions/default_modification.md" # 기본 수정 지침
+        }
+        instruction_path = self._find_context_file(instruction_map.get(mode, "default_modification.md"))
+        system_instruction = ""
+        if instruction_path:
+            try:
+                with open(instruction_path, 'r', encoding='utf-8') as f:
+                    system_instruction = f.read()
+                print(f"✅ 시스템 지침 로드: {instruction_path}")
+            except Exception as e:
+                print(f"⚠️ 시스템 지침 파일 읽기 오류: {e}")
+                
+        # --- 2. 사용자 제공 추가 컨텍스트(@파일) 처리 ---
+        context_files = re.findall(r'@([^\s]+)', user_request)
+        user_context = ""
         if context_files:
             for filename in context_files:
                 actual_path = self._find_context_file(filename)
                 if actual_path:
                     try:
                         with open(actual_path, 'r', encoding='utf-8') as f:
-                            additional_context += f"\n--- 추가 컨텍스트 파일: {os.path.basename(actual_path)} ---\n"
-                            additional_context += f.read()
+                            user_context += f"\n--- 사용자 제공 컨텍스트: {os.path.basename(actual_path)} ---\n"
+                            user_context += f.read()
                         print(f"📎 추가 컨텍스트 로드: {actual_path}")
                     except Exception as e:
                         print(f"⚠️ 컨텍스트 파일 읽기 오류: {e}")
-                else:
-                    print(f"⚠️ 컨텍스트 파일을 찾을 수 없음: {filename}")
-                    print(f"   시도한 경로들:")
-                    print(f"   - 현재 디렉토리: {os.path.join(os.getcwd(), filename)}")
-                    print(f"   - 스크립트 디렉토리: {os.path.join(os.path.dirname(__file__), filename)}")
-    
+        
+        # --- 3. 최종 프롬프트 조합 ---
         prompt = f"""
-{self.document_context}
-{additional_context}
----
-### 작업 지시
-- **사용자 선택 텍스트**:
-{selected_text}
-- **사용자 수정 요청**:
-{user_request}
+    ### === 시스템 지침 ===
+    {system_instruction}
 
-### === 너의 임무 ===
-1. **지침 준수**: '추가 컨텍스트 파일'이 있다면, 그 파일의 어투, 형식, 스타일을 **반드시** 따라서 결과물을 생성해.
-2. **결과물 생성**: '사용자 수정 요청'에 맞춰 '사용자 선택 텍스트'를 수정한 결과물을 만들어.
-3. **형식 유지**: 만약 요청이 '표로 만들어줘'라면, 반드시 **마크다운 형식의 표**로 결과물을 출력해야 해. 그 외에는 일반 텍스트로 출력해.
-4. **출력 정제**: 다른 설명, 인사말, 사과문 없이 **오직 수정된 결과물만** 출력해.
-"""
+    ### === 사용자 제공 컨텍스트 ===
+    {user_context}
+
+    ### === 작업 대상 데이터 ===
+    {context_data}
+
+    ### === 사용자 요청 ===
+    {user_request}
+
+    ---
+    너의 임무는 위의 모든 정보를 종합하여, '시스템 지침'에 명시된 대로 **오직 최종 결과물만** 출력하는 것이다.
+    """
+        # --- 4. Gemini CLI 호출 ---
         try:
-            command = 'gemini --model models/gemini-2.5-flash'
+            command = 'gemini --model gemini-2.5-flash'
             result = subprocess.run(command, input=prompt, text=True, capture_output=True, encoding='utf-8', shell=True)
             if result.returncode == 0:
                 return result.stdout.strip()
@@ -148,6 +170,7 @@ class HWPAssistant:
                 print(f"❌ Gemini 호출 실패: {result.stderr.strip()}"); return None
         except Exception as e:
             print(f"❌ Gemini 호출 오류: {e}"); return None
+
 
     
     def move_caret_right(self):
@@ -237,6 +260,130 @@ class HWPAssistant:
             print(f"❌ 표 삽입 실패: {e}")
             return False
 
+
+    def analyze_document_for_template(self):
+        """현재 문서를 분석하여 템플릿화 가능한 요소들을 추출"""
+        if not self.is_opened:
+            return None
+        
+        # 전체 텍스트 추출
+        full_text = self.hwp.GetTextFile("TEXT", "")
+        
+        # 문서 구조 정보 수집
+        structure_info = {
+            "full_text": full_text,
+            "paragraphs": full_text.split('\n'),
+            "document_type": self._detect_document_type(full_text),
+            "potential_variables": self._find_potential_variables(full_text)
+        }
+        
+        return structure_info
+
+    def _find_potential_variables(self, text):
+        """템플릿화할 수 있는 변수들을 휴리스틱으로 찾기"""        
+        potential_vars = []
+        
+        # 날짜 패턴
+        date_patterns = re.findall(r'\d{4}년\s*\d{1,2}월\s*\d{1,2}일', text)
+        # 이름 패턴 (직책 + 이름)
+        name_patterns = re.findall(r'(과장|부장|팀장|대리|주임)\s*([가-힣]{2,4})', text)
+        # 숫자 패턴
+        number_patterns = re.findall(r'\d+(?:,\d{3})*(?:원|건|명|개)', text)
+        
+        return {
+            "dates": date_patterns,
+            "names": name_patterns, 
+            "numbers": number_patterns
+        }
+
+    def create_template_from_current(self, template_name):
+        """현재 문서를 템플릿으로 저장"""
+        if not self.is_opened:
+            return False
+        
+        # 템플릿 저장 경로
+        template_path = os.path.join(os.getcwd(), "templates", f"{template_name}.hwp")
+        os.makedirs(os.path.dirname(template_path), exist_ok=True)
+        
+        try:
+            # 현재 문서를 템플릿으로 저장
+            self.hwp.SaveAs(template_path)
+            print(f"✅ 템플릿 저장 완료: {template_path}")
+            return template_path
+        except Exception as e:
+            print(f"❌ 템플릿 저장 실패: {e}")
+            return False
+
+    def create_document_from_template(self, template_name, field_values):
+        """템플릿을 바탕으로 새 문서 생성"""
+        template_path = os.path.join(os.getcwd(), "templates", f"{template_name}.hwp")
+        
+        if not os.path.exists(template_path):
+            print(f"❌ 템플릿 파일이 없습니다: {template_path}")
+            return False
+        
+        try:
+            # 기존 문서 닫기
+            if self.is_opened:
+                self.close_file()
+            
+            # 템플릿 열기
+            self.open_file(template_path)
+            
+            # 누름틀에 값 채우기
+            for field_name, field_value in field_values.items():
+                try:
+                    self.hwp.PutFieldText(field_name, field_value)
+                    print(f"✅ 필드 '{field_name}' -> '{field_value}' 적용")
+                except Exception as e:
+                    print(f"⚠️ 필드 '{field_name}' 적용 실패: {e}")
+            
+            return True
+        except Exception as e:
+            print(f"❌ 템플릿 문서 생성 실패: {e}")
+            return False
+
+    def convert_text_to_field(self, search_text: str, field_name: str):
+        """search_text를 찾아 누름틀(field_name)로 변환"""
+        if not self.is_opened:
+            return False
+
+        try:
+            # (1) 커서를 문서 본문 맨 위로 이동해 특수 컨트롤 밖으로 탈출
+            self.hwp.HAction.Run("MoveTop")
+
+            # (2) 찾기 액션으로 search_text 찾기
+            find_act = self.hwp.CreateAction("RepeatFind")   # ← 버전 호환성이 높은 ID
+            if not find_act:
+                print("⚠️ RepeatFind 액션 초기화 실패"); return False
+            fset = find_act.CreateSet()
+            find_act.GetDefault(fset)
+            fset.SetItem("FindString", search_text)
+            fset.SetItem("Direction", 1)        # 아래 방향
+            if not find_act.Execute(fset):
+                print(f"⚠️ '{search_text}' 찾기 실패"); return False
+
+            # (3) InsertField 액션으로 누름틀 삽입
+            fld_act = self.hwp.CreateAction("InsertField")
+            if not fld_act:
+                print("⚠️ InsertField 액션 초기화 실패"); return False
+            fld_set = fld_act.CreateSet()
+            fld_act.GetDefault(fld_set)
+            fld_set.SetItem("FieldName", field_name)  # 필드 이름
+            fld_set.SetItem("Command", "FORMTEXT")    # 일반 누름틀
+            fld_act.Execute(fld_set)
+
+            print(f"✅ '{search_text}' → 누름틀 '{field_name}' 변환 완료")
+            return True
+
+        except Exception as e:
+            print(f"❌ 누름틀 변환 실패: {e}")
+            return False
+
+
+
+
+
     def close_file(self):
         if not self.is_opened: return
         try: self.hwp.Quit()
@@ -244,63 +391,161 @@ class HWPAssistant:
         self.hwp, self.is_opened = None, False
         print("📁 파일이 닫혔고, HWP 프로세스가 종료되었습니다.")
 
+
+def extract_json_from_markdown(text):
+    """마크다운 코드 블록에서 JSON 부분만 추출"""
+    # ```json ... ```
+    json_match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+    if json_match:
+        return json_match.group(1).strip()
+    
+    # ``` ... ```
+    code_match = re.search(r'```\s*(.*?)\s*```', text, re.DOTALL)
+    if code_match:
+        return code_match.group(1).strip()
+    
+    # 코드 블록이 없으면 원본 반환
+    return text.strip()
+
+def strip_code_block(text: str) -> str:
+    """
+    ``````  또는  ``````  형식이면
+    앞뒤 3글자를 잘라 순수 JSON 부분만 돌려준다.
+    그밖엔 원본 그대로 반환.
+    """
+    text = text.strip()
+    if text.startswith('``````'):
+        return text[3:-3].strip()   # 앞 · 뒤 백틱 제거
+    return text
+
+
 def main():
     assistant = HWPAssistant()
-    print("🤖 HWP AI 어시스턴트 v2.0 (맥락/표 지원)이 시작되었습니다.")
+    print("🤖 HWP AI 어시스턴트 v3.0 (템플릿 기능 탑재)이 시작되었습니다.")
     print("사용법:")
-    print("  - 'open [파일경로]': HWP 파일 열기")
-    print("  - '[요청사항] @[컨텍스트파일.md]': 맥락 파일 참고하여 수정")
-    print("  - '[선택된 텍스트를] 표로 만들어줘': 표 생성")
-    print("  - 'close': 현재 파일 닫기")
-    print("  - 'quit': 프로그램 종료")
+    print("  - 'open [파일경로]': 파일 열기")
+    print("  - 'close' / 'quit': 닫기 / 종료")
+    print("\n[수정 및 생성]")
+    print("  - (텍스트 선택 후) [요청] @[스타일파일.md]: 선택 영역 수정")
+    print("  - (텍스트 선택 후) 표로 만들어줘: 선택 영역을 표로 변환")
+    print("\n[템플릿]")
+    print("  - '템플릿생성 [템플릿이름]': 현재 문서를 템플릿으로 저장 시도")
+    print("  - '템플릿사용 [이름] [내용]': 템플릿으로 새 문서 생성")
     
     while True:
         user_input = input("\n📝 명령어를 입력하세요: ").strip()
         
+        # --- 기본 명령어 처리 ---
         if user_input.lower() == 'quit':
-            assistant.close_file()
-            print("👋 어시스턴트를 종료합니다.")
-            break
-            
+            assistant.close_file(); print("👋 어시스턴트를 종료합니다."); break
         elif user_input.lower() == 'close':
             assistant.close_file()
-            
         elif user_input.startswith('open '):
             assistant.open_file(user_input[5:].strip().replace("\"", ""))
+        
+        # --- 템플릿 생성 명령어 처리 ---
+        elif user_input.startswith('템플릿생성 '):
+            if not assistant.is_opened:
+                print("⚠️ 먼저 템플릿으로 만들 HWP 파일을 열어주세요.")
+                continue
+
+            template_name = user_input[10:].strip()
+            print(f"🔄 '{template_name}' 템플릿 생성을 시작합니다...")
             
+            # 1. 문서 분석
+            structure = assistant.analyze_document_for_template()
+            if not structure:
+                print("❌ 문서 분석에 실패했습니다."); continue
+
+            # 2. Gemini에게 템플릿화 요청
+            print("🤖 Gemini에게 템플릿화 가능 영역 분석을 요청합니다...")
+            analysis_request = "이 문서를 분석하여 템플릿으로 만들 변수들을 제안해줘."
+            template_plan_str = assistant.call_gemini(analysis_request, json.dumps(structure, ensure_ascii=False, indent=2), mode="template_analysis")
+            
+            if not template_plan_str:
+                print("❌ Gemini 분석에 실패했습니다."); continue
+                
+            print(f"📋 Gemini 분석 결과:\n{template_plan_str}")
+
+            
+            # 3. 사용자 확인 후 템플릿 생성
+            try:
+                 # JSON 추출 및 파싱
+                clean_json = strip_code_block(extract_json_from_markdown(template_plan_str))
+                template_plan = json.loads(clean_json)                
+                fields_to_create = template_plan.get("template_fields", [])
+                
+                if not fields_to_create:
+                    print("⚠️ 템플릿으로 만들 필드를 찾지 못했습니다."); continue
+
+                print(f"✅ {len(fields_to_create)}개의 템플릿 필드를 발견했습니다:")
+                for field in fields_to_create:
+                    print(f"   - {field.get('field_name', 'unknown')}: {field.get('description', 'no description')}")
+
+                confirm = input("이 분석 결과로 템플릿을 생성할까요? (y/n): ").lower()
+                if confirm == 'y':
+                    for field in fields_to_create:
+                        assistant.convert_text_to_field(field["original_text"], field["field_name"])
+                    
+                    assistant.create_template_from_current(template_name)
+                else:
+                    print("❌ 템플릿 생성을 취소했습니다.")
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"❌ Gemini 분석 결과를 처리할 수 없습니다: {e}")
+
+        # --- 템플릿 사용 명령어 처리 ---
+        elif user_input.startswith('템플릿사용 '):
+            parts = user_input[10:].split(' ', 1)
+            if len(parts) < 2:
+                print("⚠️ 사용법: 템플릿사용 [템플릿이름] [값 정보]"); continue
+
+            template_name, user_values = parts[0], parts[1]
+            print(f"🔄 '{template_name}' 템플릿을 사용하여 새 문서를 생성합니다...")
+            
+            # Gemini에게 사용자 입력 파싱 요청
+            print("🤖 Gemini에게 값 파싱을 요청합니다...")
+            parsing_request = f"다음 사용자 입력을 템플릿 값으로 파싱해줘: {user_values}"
+            parsed_values_str = assistant.call_gemini(parsing_request, user_values, mode="template_apply")
+
+            if not parsed_values_str:
+                print("❌ Gemini 값 파싱에 실패했습니다."); continue
+            
+            print(f"📝 파싱된 값들: {parsed_values_str}")
+            
+            try:
+                field_values = json.loads(parsed_values_str)
+                assistant.create_document_from_template(template_name, field_values)
+            except json.JSONDecodeError:
+                print("❌ Gemini가 생성한 값(JSON)을 처리할 수 없습니다.")
+        
+        # --- 일반 수정 및 표 생성 처리 ---
         elif assistant.is_opened:
             selected_text = assistant.get_selected_text()
             if not selected_text and "표" not in user_input:
-                print("⚠️ 먼저 HWP에서 텍스트를 선택하거나, 표 생성 요청을 해주세요.")
-                continue
+                print("⚠️ 먼저 HWP에서 텍스트를 선택하거나, 표 생성 요청을 해주세요."); continue
             
             print(f"📌 선택된 텍스트: '{selected_text[:50]}...'")
             print("🔄 Gemini에게 작업을 요청합니다...")
             
-            modified_text = assistant.call_gemini(user_input, selected_text)
+            modified_text = assistant.call_gemini(user_input, selected_text, mode="default")
             
             if modified_text:
                 print(f"✨ Gemini 제안:\n{'-'*20}\n{modified_text}\n{'-'*20}")
                 
-                # 표 삽입 요청 처리
+                # 표 삽입
                 if "표" in user_input and modified_text.strip().startswith('|'):
                     confirm = input("이 표를 현재 커서 위치에 삽입할까요? (y/n): ").lower()
-                    if confirm == 'y': 
-                        assistant.insert_table(modified_text)
-                    else: 
-                        print("❌ 표 삽입을 취소했습니다.")
-                # 일반 텍스트 교체 처리
+                    if confirm == 'y': assistant.insert_table(modified_text)
+                    else: print("❌ 표 삽입을 취소했습니다.")
+                # 일반 텍스트 교체
                 else:
                     confirm = input("이 내용으로 교체할까요? (y/n): ").lower()
                     if confirm == 'y':
-                        if assistant.replace_selected_text(modified_text): 
-                            print("✅ 성공적으로 교체되었습니다!")
-                        else: 
-                            print("❌ 교체에 실패했습니다.")
-                    else: 
-                        print("❌ 교체를 취소했습니다.")
+                        if assistant.replace_selected_text(modified_text): print("✅ 성공적으로 교체되었습니다!")
+                        else: print("❌ 교체에 실패했습니다.")
+                    else: print("❌ 교체를 취소했습니다.")
         else:
-            print("⚠️ 먼저 'open [파일경로]' 명령으로 파일을 열어주세요.")
+            print("⚠️ 먼저 명령을 실행할 파일을 열어주세요. (예: open 파일경로)")
 
 if __name__ == "__main__":
     main()
