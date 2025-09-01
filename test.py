@@ -1,120 +1,25 @@
 import win32com.client as win32
-import win32clipboard as cb
-import win32con
 import os
-import re
+import time
 
-def _set_clip(text: str):
-    """클립보드에 유니코드 텍스트 설정"""
-    cb.OpenClipboard()
-    cb.EmptyClipboard()
-    cb.SetClipboardData(win32con.CF_UNICODETEXT, text)
-    cb.CloseClipboard()
-
-def insert_table(hwp, markdown_table: str) -> bool:
-    """마크다운 표를 HWP 문서에 삽입"""
-    if not markdown_table:
-        print("❌ 표 데이터가 비어있습니다.")
-        return False
-
-    # 1) 마크다운 파싱
-    lines = [line.strip() for line in markdown_table.strip().split('\n') if line.strip()]
+def test_putfieldtext():
+    """
+    PutFieldText의 안정성을 검증하는 강화된 테스트 코드.
+    """
+    print("🤖 PutFieldText 기능 테스트 시작...")
     
-    # 헤더 구분선 제거 (|---|---|)
-    if len(lines) > 1 and lines[1].lstrip().startswith('|') and '-' in lines[1]:
-        lines.pop(1)
-
-    table_data = []
-    for line in lines:
-        if line.startswith('|') and line.endswith('|'):
-            line = line[1:-1]
-        cells = [cell.strip() for cell in line.split('|')]
-        if any(cells):  # 빈 행 제외
-            table_data.append(cells)
-
-    rows = len(table_data)
-    cols = max(len(r) for r in table_data) if rows > 0 else 0
-
-    if rows * cols == 0:
-        print("❌ 표 데이터 파싱 실패")
-        return False
-
-    print(f"📊 파싱 결과: {rows}행 {cols}열")
-    for i, row in enumerate(table_data):
-        print(f"   행 {i+1}: {row}")
-
-    try:
-        # 2) 표 생성 (CreateAction 패턴)
-        act = hwp.CreateAction("TableCreate")
-        pset = act.CreateSet()
-        act.GetDefault(pset)
-        
-        pset.SetItem("Rows", rows)
-        pset.SetItem("Cols", cols)
-        pset.SetItem("WidthType", 2)  # 자동 너비
-        pset.SetItem("HeightType", 0)  # 자동 높이
-        
-        act.Execute(pset)
-        print("✅ 표 프레임 생성 완료")
-
-        # 3) 행 단위 데이터 입력
-        for r, row in enumerate(table_data):
-            print(f"🔄 {r+1}행 데이터 입력: {row}")
-            
-            # 현재 행 전체 블록 선택
-            hwp.HAction.Run("TableCellBlockRow")
-            
-            # 열 수를 맞춰 탭으로 구분된 텍스트 생성
-            padded_row = row + [""] * (cols - len(row))
-            row_text = "\t".join(padded_row)
-            
-            # 클립보드를 통해 붙여넣기
-            _set_clip(row_text)
-            hwp.HAction.Run("Paste")
-            
-            # 마지막 행이 아니면 다음 행으로 이동
-            if r < rows - 1:
-                hwp.HAction.Run("TableLowerCell")
-
-        # 4) 표 편집 모드 종료
-        hwp.HAction.Run("Cancel")
-        print(f"✅ {rows}×{cols} 표 삽입 완료!")
-        return True
-
-    except Exception as e:
-        print(f"❌ 표 삽입 실패: {e}")
-        return False
-
-def main():
-    print("🤖 HWP 표 삽입 테스트 시작")
+    # 테스트할 템플릿 파일 경로
+    template_path = os.path.join(os.getcwd(), "templates", "알림장.hwp")
     
-    # 테스트할 마크다운 표
-    test_table = '''
-| 항목 | 수량 |
-|---|---|
-| 사과 | 5개 |
-| 바나나 | 10개 |
-| 오렌지 | 3개 |
-'''
-    
-    # HWP 파일 경로 (현재 폴더의 test.hwp)
-    file_path = os.path.join(os.getcwd(), "test.hwp")
-    
-    # test.hwp 파일이 없으면 생성
-    if not os.path.exists(file_path):
-        print("📝 test.hwp 파일이 없어 새로 생성합니다...")
-        try:
-            hwp_temp = win32.gencache.EnsureDispatch("HWPFrame.HwpObject")
-            hwp_temp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
-            hwp_temp.XHwpWindows.Item(0).Visible = False  # 임시로 숨김
-            hwp_temp.New()
-            hwp_temp.SaveAs(file_path)
-            hwp_temp.Quit()
-            print("✅ 빈 test.hwp 파일 생성 완료")
-        except Exception as e:
-            print(f"❌ test.hwp 생성 실패: {e}")
-            return
+    if not os.path.exists(template_path):
+        print(f"❌ 테스트 실패: '{template_path}' 파일이 없습니다.")
+        return
 
+    # 테스트할 필드명과 값
+    field_to_test = "평가대상학년 필드입니다"
+    value_to_insert = "테스트 성공!"
+    
+    hwp = None
     try:
         # HWP 실행 및 파일 열기
         print("🔄 HWP 프로그램 실행 중...")
@@ -122,23 +27,53 @@ def main():
         hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
         hwp.XHwpWindows.Item(0).Visible = True
         
-        print(f"📂 파일 열기: {file_path}")
-        hwp.Open(file_path)
+        print(f"📂 파일 열기: {template_path}")
+        hwp.Open(template_path)
         
-        print("🔄 표 삽입 시작...")
-        success = insert_table(hwp, test_table)
+        # 1. PutFieldText 실행
+        print(f"🔄 '{field_to_test}' 필드에 '{value_to_insert}' 값을 입력합니다...")
+        hwp.PutFieldText(field_to_test, value_to_insert)
         
-        if success:
-            print("\n🎉 테스트 성공! HWP 창에서 표가 제대로 삽입되었는지 확인하세요.")
-            print("📝 Enter 키를 누르면 프로그램이 종료됩니다.")
-            input()
+        # ✨ 핵심 수정: 상태 갱신을 위한 로직 추가
+        print("⚙️  한/글 내부 상태 갱신 시도...")
+        
+        # 다른 필드로 포커스 이동 (문서의 첫 번째 필드 추천)
+        all_fields = [f.strip() for f in hwp.GetFieldList(0, "").split('\x02') if f.strip()]
+        if all_fields:
+            first_field = all_fields[0]
+            if first_field != field_to_test:
+                hwp.MoveToField(first_field)
+                print(f"   -> '{first_field}'(으)로 포커스 이동")
+        
+        # 다시 원래 필드로 포커스 이동하여 상태 재확인
+        hwp.MoveToField(field_to_test)
+        print(f"   -> 다시 '{field_to_test}'(으)로 포커스 이동")
+
+        # 2. GetFieldText로 결과 재확인
+        time.sleep(0.1) # 물리적 반응 시간 대기
+        result_text = hwp.GetFieldText(field_to_test)
+        
+        print(f"📊 필드 값 재확인: '{result_text}'")
+        
+        if result_text == value_to_insert:
+            print("✅ PutFieldText 실행 성공! 메모리상의 값 변경을 확인했습니다.")
         else:
-            print("\n❌ 테스트 실패!")
+            print("❌ PutFieldText 실행 실패! 값이 변경되지 않았습니다.")
+            print("   (원인 추정: 필드 이름 오타 또는 문서 구조 문제)")
+            return
             
-        # HWP 종료하지 않고 사용자가 결과 확인할 수 있도록 유지
+        # 3. 변경사항 저장
+        hwp.Save()
+        print("💾 변경사항이 파일에 저장되었습니다.")
         
+        print("\n🎉 테스트 성공! HWP 창에서 내용이 실제로 변경되었는지 확인하세요.")
+        input("   확인 후 Enter 키를 누르면 프로그램이 종료됩니다.")
+
     except Exception as e:
         print(f"❌ 전체 프로세스 실패: {e}")
+    finally:
+        if hwp:
+            hwp.Quit()
 
 if __name__ == "__main__":
-    main()
+    test_putfieldtext()

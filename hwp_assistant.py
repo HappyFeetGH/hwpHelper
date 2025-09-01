@@ -315,7 +315,7 @@ class HWPAssistant:
             return False
 
     def create_document_from_template(self, template_name, field_values):
-        """템플릿을 바탕으로 새 문서 생성"""
+        """템플릿을 바탕으로 새 문서 생성 (누름틀 제거 포함)"""
         template_path = os.path.join(os.getcwd(), "templates", f"{template_name}.hwp")
         
         if not os.path.exists(template_path):
@@ -323,66 +323,110 @@ class HWPAssistant:
             return False
         
         try:
-            # 기존 문서 닫기
+            # 기존에 열린 파일이 있다면 닫기
             if self.is_opened:
                 self.close_file()
             
-            # 템플릿 열기
+            # 템플릿 파일 열기
             self.open_file(template_path)
             
-            # 누름틀에 값 채우기
+            # 1단계: 필드 값 적용
+            print("🔄 누름틀에 값을 입력합니다...")
             for field_name, field_value in field_values.items():
+                merged_field_name = field_name+" 자동생성 필드"
                 try:
-                    self.hwp.PutFieldText(field_name, field_value)
-                    print(f"✅ 필드 '{field_name}' -> '{field_value}' 적용")
+                    self.hwp.PutFieldText(merged_field_name, str(field_value))
+                    print(f"✅ 필드 '{field_name}' -> '{field_value}' 적용 완료")
                 except Exception as e:
                     print(f"⚠️ 필드 '{field_name}' 적용 실패: {e}")
             
+            # 2단계: 모든 누름틀 제거 (텍스트는 유지)
+            print("🔄 모든 누름틀을 제거합니다...")
+            self._remove_all_fields()
+            
+            # 3단계: 새로운 파일로 저장
+            import datetime
+            output_path = os.path.join(os.getcwd(), "output", f"{template_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.hwp")
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            self.hwp.SaveAs(output_path)
+            print(f"📄 완성된 문서 저장: {output_path}")
+
             return True
         except Exception as e:
             print(f"❌ 템플릿 문서 생성 실패: {e}")
             return False
 
-    def convert_text_to_field(self, search_text: str, field_name: str):
-        """search_text를 찾아 누름틀(field_name)로 변환"""
-        if not self.is_opened:
+    def _remove_all_fields(self):
+        """문서 내 모든 누름틀 제거 (텍스트는 유지)"""
+        try:
+            self.hwp.SetMessageBoxMode(0x1000)
+            
+            field_positions = []
+            ctrl = self.hwp.HeadCtrl
+            
+            # 1) 모든 누름틀 위치 수집
+            while ctrl:
+                if ctrl.CtrlID == "%clk":  # 누름틀의 CtrlID
+                    field_positions.append(ctrl.GetAnchorPos(0))
+                ctrl = ctrl.Next
+            
+            # 2) 역순으로 누름틀 삭제 (뒤에서부터 삭제해야 위치가 변하지 않음)
+            for pos in reversed(field_positions):
+                try:
+                    self.hwp.SetPosBySet(pos)
+                    # 누름틀 선택 후 삭제
+                    self.hwp.Run("SelectCtrl")
+                    self.hwp.Run("Delete")
+                except Exception as e:
+                    print(f"⚠️ 누름틀 삭제 중 오류: {e}")
+            
+            print(f"✅ 총 {len(field_positions)}개의 누름틀을 제거했습니다.")
+            return len(field_positions) > 0
+            
+        except Exception as e:
+            print(f"❌ 누름틀 제거 실패: {e}")
             return False
 
+    def convert_text_to_field(self, search_text: str, field_name: str):
+        """search_text를 찾아 CreateField()로 누름틀 변환 (가장 안정적인 방법)"""
+        if not self.is_opened:
+            return False
+        
         try:
-            # (1) 커서를 문서 본문 맨 위로 이동해 특수 컨트롤 밖으로 탈출
+            # 팝업 자동 확인 처리
+            self.hwp.SetMessageBoxMode(0x00010001)
+            
+            # 커서를 문서 맨 위로 이동
             self.hwp.HAction.Run("MoveTop")
 
-            # (2) 찾기 액션으로 search_text 찾기
-            find_act = self.hwp.CreateAction("RepeatFind")   # ← 버전 호환성이 높은 ID
+            # 찾기 액션 실행
+            find_act = self.hwp.CreateAction("RepeatFind")
             if not find_act:
-                print("⚠️ RepeatFind 액션 초기화 실패"); return False
+                return False
+            
             fset = find_act.CreateSet()
             find_act.GetDefault(fset)
             fset.SetItem("FindString", search_text)
-            fset.SetItem("Direction", 1)        # 아래 방향
-            if not find_act.Execute(fset):
-                print(f"⚠️ '{search_text}' 찾기 실패"); return False
-
-            # (3) InsertField 액션으로 누름틀 삽입
-            fld_act = self.hwp.CreateAction("InsertField")
-            if not fld_act:
-                print("⚠️ InsertField 액션 초기화 실패"); return False
-            fld_set = fld_act.CreateSet()
-            fld_act.GetDefault(fld_set)
-            fld_set.SetItem("FieldName", field_name)  # 필드 이름
-            fld_set.SetItem("Command", "FORMTEXT")    # 일반 누름틀
-            fld_act.Execute(fld_set)
-
-            print(f"✅ '{search_text}' → 누름틀 '{field_name}' 변환 완료")
-            return True
+            fset.SetItem("Direction", 1)
+            
+            if find_act.Execute(fset):
+                # ✨ 핵심: CreateField() 직접 호출
+                self.hwp.CreateField(
+                    field_name,                    # 필드명 (PutFieldText에서 사용할 키)
+                    f"{search_text}",             # 안내문 (사용자가 보는 텍스트)
+                    f"{field_name} 자동생성 필드"  # 도움말
+                )
+                print(f"✅ '{search_text}' -> 누름틀 '{field_name}' 변환 완료")
+                return True
+            else:
+                print(f"⚠️ '{search_text}' 찾기 실패")
+                return False
 
         except Exception as e:
             print(f"❌ 누름틀 변환 실패: {e}")
             return False
-
-
-
-
+        finally:
+            self.hwp.SetMessageBoxMode(0)
 
     def close_file(self):
         if not self.is_opened: return
@@ -449,7 +493,7 @@ def main():
                 print("⚠️ 먼저 템플릿으로 만들 HWP 파일을 열어주세요.")
                 continue
 
-            template_name = user_input[10:].strip()
+            template_name = user_input[6:].strip()
             print(f"🔄 '{template_name}' 템플릿 생성을 시작합니다...")
             
             # 1. 문서 분석
@@ -495,7 +539,7 @@ def main():
 
         # --- 템플릿 사용 명령어 처리 ---
         elif user_input.startswith('템플릿사용 '):
-            parts = user_input[10:].split(' ', 1)
+            parts = user_input[6:].split(' ', 1)
             if len(parts) < 2:
                 print("⚠️ 사용법: 템플릿사용 [템플릿이름] [값 정보]"); continue
 
@@ -513,7 +557,8 @@ def main():
             print(f"📝 파싱된 값들: {parsed_values_str}")
             
             try:
-                field_values = json.loads(parsed_values_str)
+                clean_json = strip_code_block(extract_json_from_markdown(parsed_values_str))
+                field_values = json.loads(clean_json)
                 assistant.create_document_from_template(template_name, field_values)
             except json.JSONDecodeError:
                 print("❌ Gemini가 생성한 값(JSON)을 처리할 수 없습니다.")
