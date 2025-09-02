@@ -437,6 +437,43 @@ class HWPAssistant:
         finally:
             self.hwp.SetMessageBoxMode(0)
 
+    def get_field_list_from_file(self, template_name):
+        """템플릿 파일에서 누름틀 필드 목록을 가져옵니다."""
+        template_path = os.path.join(os.getcwd(), "templates", f"{template_name}.hwp")
+        
+        if not os.path.exists(template_path):
+            raise FileNotFoundError(f"템플릿 파일이 없습니다: {template_path}")
+        
+        # 현재 열린 파일이 있다면 상태 저장 후 닫기
+        was_opened = self.is_opened
+        original_file = self.current_file
+        
+        if was_opened:
+            self.hwp.Save() # 혹시 모를 변경사항 저장
+            self.hwp.Quit()
+            self.is_opened = False
+
+        # 임시로 템플릿 파일 열기
+        self.hwp = win32.gencache.EnsureDispatch("HWPFrame.HwpObject")
+        self.hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
+        self.hwp.XHwpWindows.Item(0).Visible = False # 화면에 보이지 않게 처리
+        self.hwp.Open(template_path)
+        
+        # 필드 목록 가져오기
+        field_list_raw = self.hwp.GetFieldList(0, "")
+        fields = [f.strip() for f in field_list_raw.split('\x02') if f.strip()]
+        
+        # 임시 파일 닫기
+        self.hwp.Quit()
+        
+        # 원래 파일이 있었다면 다시 열기
+        if was_opened:
+            self.open_file(original_file)
+        else:
+            self.hwp = None # hwp 객체 초기화
+            
+        return fields
+
     def close_file(self):
         if not self.is_opened: return
         try: self.hwp.Quit()

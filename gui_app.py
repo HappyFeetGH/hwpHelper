@@ -665,6 +665,8 @@ class TemplateUsageWindow(ctk.CTkToplevel):
                 if templates:
                     self.template_combo.configure(values=templates)
                     self.template_combo.set(templates[0])
+                    # ✨ 첫 번째 템플릿 필드 자동 로드
+                    self._on_template_selected(templates[0])
                 else:
                     self.template_combo.configure(values=["템플릿 없음"])
             else:
@@ -673,33 +675,36 @@ class TemplateUsageWindow(ctk.CTkToplevel):
             self.template_combo.configure(values=[f"오류: {e}"])
             
     def _on_template_selected(self, template_name):
-        """템플릿 선택 시 동적 필드 생성"""
+        """✨ 템플릿 선택 시 실제 필드 로드"""
         # 기존 필드 제거
         for widget in self.fields_frame.winfo_children():
             widget.destroy()
         self.field_entries.clear()
         
-        # 예시 필드들 (실제로는 템플릿 파일을 분석해서 가져와야 함)
-        # 여기서는 간단히 하드코딩된 예시를 사용
-        example_fields = {
-            "알림장": ["문서제목", "평가학년도학기", "평가대상학년범위", "문서작성일"],
-            "공문": ["수신부서", "발신부서", "제목", "작성일자", "작성자"],
-            "보고서": ["보고서명", "작성자", "작성일", "보고대상"]
-        }
+        try:
+            # 템플릿 파일에서 필드 목록 가져오기
+            fields = self.assistant.get_field_list_from_file(template_name)
+            
+            if not fields:
+                ctk.CTkLabel(self.fields_frame, text="템플릿에서 필드를 찾을 수 없습니다.").pack()
+                return
+
+            # 동적으로 필드 입력 위젯 생성
+            for field_name in fields:
+                field_frame = ctk.CTkFrame(self.fields_frame)
+                field_frame.pack(fill="x", padx=5, pady=5)
+                
+                label = ctk.CTkLabel(field_frame, text=field_name, width=150)
+                label.pack(side="left", padx=10)
+                
+                entry = ctk.CTkEntry(field_frame, placeholder_text=f"{field_name} 입력")
+                entry.pack(side="right", expand=True, fill="x", padx=10)
+                
+                self.field_entries[field_name] = entry
         
-        fields = example_fields.get(template_name, ["필드1", "필드2", "필드3"])
-        
-        for field_name in fields:
-            field_frame = ctk.CTkFrame(self.fields_frame)
-            field_frame.pack(fill="x", padx=5, pady=5)
-            
-            label = ctk.CTkLabel(field_frame, text=field_name, width=120)
-            label.pack(side="left", padx=10)
-            
-            entry = ctk.CTkEntry(field_frame, placeholder_text=f"{field_name} 입력")
-            entry.pack(side="right", expand=True, fill="x", padx=10)
-            
-            self.field_entries[field_name] = entry
+        except Exception as e:
+            ctk.CTkLabel(self.fields_frame, text=f"필드 로딩 오류: {e}").pack()
+
             
     def _create_document(self):
         """템플릿으로 문서 생성"""
