@@ -341,8 +341,8 @@ class HWPAssistant:
                     print(f"⚠️ 필드 '{field_name}' 적용 실패: {e}")
             
             # 2단계: 모든 누름틀 제거 (텍스트는 유지)
-            print("🔄 모든 누름틀을 제거합니다...")
-            self._remove_all_fields()
+            #print("🔄 모든 누름틀을 제거합니다...")
+            #self._remove_all_fields()
             
             # 3단계: 새로운 파일로 저장
             import datetime
@@ -356,10 +356,14 @@ class HWPAssistant:
             print(f"❌ 템플릿 문서 생성 실패: {e}")
             return False
 
+    # 모든 누름틀 삭제 예시
     def _remove_all_fields(self):
-        """문서 내 모든 누름틀 제거 (텍스트는 유지)"""
+        """문서 내 모든 누름틀 제거 (텍스트는 유지) - 팝업 차단 강화"""
         try:
-            self.hwp.SetMessageBoxMode(0x1000)
+            # ✨ 강화된 팝업 차단 설정
+            self.hwp.SetMessageBoxMode(0x00010001)  # 기본 팝업 차단
+            self.hwp.SetMessageBoxMode(0x00010000)  # 추가 팝업 차단
+            self.hwp.SetMessageBoxMode(0x10000000)  # 확인 대화상자 차단
             
             field_positions = []
             ctrl = self.hwp.HeadCtrl
@@ -370,7 +374,7 @@ class HWPAssistant:
                     field_positions.append(ctrl.GetAnchorPos(0))
                 ctrl = ctrl.Next
             
-            # 2) 역순으로 누름틀 삭제 (뒤에서부터 삭제해야 위치가 변하지 않음)
+            # 2) 역순으로 누름틀 삭제
             for pos in reversed(field_positions):
                 try:
                     self.hwp.SetPosBySet(pos)
@@ -386,6 +390,11 @@ class HWPAssistant:
         except Exception as e:
             print(f"❌ 누름틀 제거 실패: {e}")
             return False
+        finally:
+            # ✨ 팝업 모드 원상 복구
+            self.hwp.SetMessageBoxMode(0)
+
+
 
     def convert_text_to_field(self, search_text: str, field_name: str):
         """search_text를 찾아 CreateField()로 누름틀 변환 (가장 안정적인 방법)"""
