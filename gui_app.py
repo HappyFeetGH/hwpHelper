@@ -529,6 +529,16 @@ class TemplateCreationWindow(ctk.CTkToplevel):
         if not selected_fields:
             self._show_error("하나 이상의 필드를 선택하세요")
             return
+
+        # ✨ 문서가 열려있는지 확인
+        if not self.assistant.is_opened:
+            self._show_error("템플릿으로 만들 문서가 열려있지 않습니다.")
+            return
+            
+        # ✨ HWP 객체 상태 확인
+        if not self.assistant.hwp:
+            self._show_error("HWP 객체가 초기화되지 않았습니다.")
+            return
             
         # 버튼 비활성화
         self.create_button.configure(state="disabled", text="생성 중...")

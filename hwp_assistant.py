@@ -5,10 +5,15 @@ import sys
 import os
 import re
 import win32clipboard as cb, win32con
-
+import pythoncom
 
 class HWPAssistant:
     def __init__(self):
+        try:
+            pythoncom.CoInitialize()
+        except:
+            pass
+
         self.hwp = None
         self.is_opened = False
         self.current_file = ""
@@ -19,12 +24,15 @@ class HWPAssistant:
             print("⚠️  이미 파일이 열려있습니다. 'close' 명령으로 먼저 닫아주세요.")
             return False
         try:
-            self.hwp = win32.gencache.EnsureDispatch("HWPFrame.HwpObject")
-            self.hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
-            self.hwp.XHwpWindows.Item(0).Visible = True
+            if self.hwp is None:
+                pythoncom.CoInitialize()
+                self.hwp = win32.gencache.EnsureDispatch("HWPFrame.HwpObject")
+                self.hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
+                self.hwp.XHwpWindows.Item(0).Visible = True
+
             self.hwp.Open(file_path)
             self.is_opened = True
-            self.current_file = file_path
+            self.current_file = os.path.abspath(file_path)
             
             full_text = self.hwp.GetTextFile("TEXT", "")
             self.document_context = f"""
@@ -298,7 +306,12 @@ class HWPAssistant:
 
     def create_template_from_current(self, template_name):
         """현재 문서를 템플릿으로 저장"""
+        if not self.hwp:
+            print("❌ HWP 객체가 초기화되지 않았습니다.")
+            return False
+            
         if not self.is_opened:
+            print("❌ 열린 문서가 없습니다.")
             return False
         
         # 템플릿 저장 경로
@@ -306,6 +319,8 @@ class HWPAssistant:
         os.makedirs(os.path.dirname(template_path), exist_ok=True)
         
         try:
+            self.hwp.Save()
+
             # 현재 문서를 템플릿으로 저장
             self.hwp.SaveAs(template_path)
             print(f"✅ 템플릿 저장 완료: {template_path}")
@@ -326,19 +341,33 @@ class HWPAssistant:
             # 기존에 열린 파일이 있다면 닫기
             if self.is_opened:
                 self.close_file()
-            
+
+            if not self.hwp:
+                pythoncom.CoInitialize()
+                self.hwp = win32.gencache.EnsureDispatch("HWPFrame.HwpObject")
+                self.hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
+                self.hwp.XHwpWindows.Item(0).Visible = True
+
             # 템플릿 파일 열기
-            self.open_file(template_path)
+            if not self.open_file(template_path):
+                print("❌ 템플릿 파일 열기 실패")
+                return False
             
             # 1단계: 필드 값 적용
             print("🔄 누름틀에 값을 입력합니다...")
             for field_name, field_value in field_values.items():
-                merged_field_name = field_name+" 자동생성 필드"
+                #merged_field_name = field_name+" 자동생성 필드"
+                merged_field_name = field_name
                 try:
+                    # ✨ hwp 객체 상태 재확인
+                    if not self.hwp:
+                        raise Exception("HWP 객체가 None입니다")
+                        
                     self.hwp.PutFieldText(merged_field_name, str(field_value))
                     print(f"✅ 필드 '{field_name}' -> '{field_value}' 적용 완료")
                 except Exception as e:
                     print(f"⚠️ 필드 '{field_name}' 적용 실패: {e}")
+
             
             # 2단계: 모든 누름틀 제거 (텍스트는 유지)
             #print("🔄 모든 누름틀을 제거합니다...")
@@ -346,8 +375,13 @@ class HWPAssistant:
             
             # 3단계: 새로운 파일로 저장
             import datetime
-            output_path = os.path.join(os.getcwd(), "output", f"{template_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.hwp")
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            output_dir = os.path.join(os.getcwd(), "output")
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, f"{template_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.hwp")
+            
+            if not self.hwp:
+                raise Exception("저장 중 HWP 객체가 None입니다")
+                
             self.hwp.SaveAs(output_path)
             print(f"📄 완성된 문서 저장: {output_path}")
 
@@ -475,11 +509,17 @@ class HWPAssistant:
         return fields
 
     def close_file(self):
-        if not self.is_opened: return
-        try: self.hwp.Quit()
-        except Exception: pass
-        self.hwp, self.is_opened = None, False
-        print("📁 파일이 닫혔고, HWP 프로세스가 종료되었습니다.")
+        """안전한 파일 닫기"""
+        if self.hwp and self.is_opened:
+            try:
+                self.hwp.Quit()
+                print("📁 파일이 닫혔고, HWP 프로세스가 종료되었습니다.")
+            except Exception as e:
+                print(f"⚠️ 파일 닫기 중 오류: {e}")
+            finally:
+                self.hwp = None
+                self.is_opened = False
+                self.current_file = ""
 
 
 def extract_json_from_markdown(text):
