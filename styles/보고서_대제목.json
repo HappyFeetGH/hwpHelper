@@ -1,0 +1,16 @@
+{
+  "description": "보고서의 가장 큰 메인 제목 스타일",
+  "CharShape": {
+    "FaceNameHangul": "HY헤드라인M",
+    "FaceNameLatin": "Arial Black",
+    "Height": 1800,
+    "Bold": 1,
+    "TextColor": 255
+  },
+  "ParaShape": {
+    "Alignment": 3,
+    "TopMargin": 500,
+    "BottomMargin": 500,
+    "LineSpacing": 160
+  }
+}

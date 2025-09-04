@@ -1,0 +1,16 @@
+{
+  "description": "표의 제목이나 캡션에 사용하는 스타일",
+  "CharShape": {
+    "FaceNameHangul": "맑은 고딕",
+    "FaceNameLatin": "Arial",
+    "Height": 950,
+    "Bold": 1,
+    "TextColor": 0
+  },
+  "ParaShape": {
+    "Alignment": 3,
+    "TopMargin": 200,
+    "BottomMargin": 100,
+    "LineSpacing": 130
+  }
+}

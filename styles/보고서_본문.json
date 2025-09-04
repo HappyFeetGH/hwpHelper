@@ -1,0 +1,17 @@
+{
+  "description": "일반적인 보고서의 본문 스타일",
+  "CharShape": {
+    "FaceNameHangul": "맑은 고딕",
+    "FaceNameLatin": "Calibri",
+    "Height": 1050,
+    "Bold": 0,
+    "TextColor": 0
+  },
+  "ParaShape": {
+    "Alignment": 0,
+    "LeftMargin": 0,
+    "RightMargin": 0,
+    "Indent": 200,
+    "LineSpacing": 170
+  }
+}

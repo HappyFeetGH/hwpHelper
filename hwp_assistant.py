@@ -508,6 +508,150 @@ class HWPAssistant:
             
         return fields
 
+
+    def get_style_list(self):
+        """'styles' 폴더에서 사용 가능한 스타일(.json) 목록을 반환합니다."""
+        style_dir = os.path.join(os.getcwd(), "styles")
+        if not os.path.exists(style_dir):
+            os.makedirs(style_dir)
+            return []
+        
+        try:
+            styles = [f[:-5] for f in os.listdir(style_dir) if f.endswith('.json')]
+            return styles
+        except Exception as e:
+            print(f"❌ 스타일 목록 로딩 실패: {e}")
+            return []
+
+    def apply_style_to_selection(self, style_data):
+        """JSON 데이터를 바탕으로 선택 영역에 스타일을 적용합니다."""
+        if not self.is_opened:
+            print("❌ 스타일을 적용할 파일이 열려있지 않습니다.")
+            return False
+            
+        try:
+            # --- 1. 글자 모양 적용 (CharShape) ---
+            if "CharShape" in style_data:
+                char_action = self.hwp.CreateAction("CharShape")
+                char_set = char_action.CreateSet()
+                char_action.GetDefault(char_set)
+                
+                for key, value in style_data["CharShape"].items():
+                    char_set.SetItem(key, value)
+                    
+                char_action.Execute(char_set)
+                print("✅ 글자 모양 적용 완료")
+
+            # --- 2. 문단 모양 적용 (ParaShape) ---
+            if "ParaShape" in style_data:
+                para_action = self.hwp.CreateAction("ParagraphShape")
+                para_set = para_action.CreateSet()
+                para_action.GetDefault(para_set)
+                
+                for key, value in style_data["ParaShape"].items():
+                    para_set.SetItem(key, value)
+                    
+                para_action.Execute(para_set)
+                print("✅ 문단 모양 적용 완료")
+                
+            return True
+        except Exception as e:
+            print(f"❌ 스타일 적용 실패: {e}")
+            return False
+ 
+
+
+    def analyze_document_structure(self):
+        """문서 구조를 분석하여 스타일 적용 계획을 생성"""
+        if not self.is_opened:
+            return None
+        
+        try:
+            # 전체 텍스트와 줄 정보 가져오기
+            full_text = self.hwp.GetTextFile("TEXT", "")
+            lines = full_text.split('\n')
+            
+            # 줄 번호와 함께 텍스트 정보 구성
+            numbered_text = []
+            for i, line in enumerate(lines, 1):
+                if line.strip():  # 빈 줄 제외
+                    numbered_text.append(f"줄 {i}: {line.strip()}")
+            
+            analysis_text = '\n'.join(numbered_text)
+            
+            # Gemini에게 구조 분석 요청
+            analysis_request = "이 문서의 구조를 분석하여 각 부분에 적절한 스타일을 제안해줘."
+            result = self.call_gemini(
+                analysis_request, 
+                analysis_text, 
+                mode="document_style_analysis"
+            )
+            
+            return result
+        except Exception as e:
+            print(f"❌ 문서 구조 분석 실패: {e}")
+            return None
+
+    def select_text_by_line_range(self, start_line, end_line):
+        """지정된 줄 범위의 텍스트를 선택"""
+        try:
+            # 문서 처음으로 이동
+            self.hwp.HAction.Run("MoveDocBegin")
+            
+            # 시작 줄로 이동
+            for i in range(start_line - 1):
+                self.hwp.HAction.Run("MoveDown")
+            
+            # 줄 선택 시작
+            self.hwp.HAction.Run("MoveLineBegin")
+            self.hwp.HAction.Run("SelectMode")
+            
+            # 끝 줄까지 선택
+            for i in range(end_line - start_line):
+                self.hwp.HAction.Run("MoveDown")
+            self.hwp.HAction.Run("MoveLineEnd")
+            
+            return True
+        except Exception as e:
+            print(f"❌ 텍스트 선택 실패: {e}")
+            return False
+
+    def apply_smart_styles(self, style_plan, style_mapping):
+        """스타일 계획에 따라 자동으로 스타일 적용"""
+        try:
+            success_count = 0
+            
+            for plan_item in style_plan:
+                start_line = plan_item['start_line']
+                end_line = plan_item['end_line']
+                style_type = plan_item['style_type']
+                
+                # 해당 범위 선택
+                if not self.select_text_by_line_range(start_line, end_line):
+                    continue
+                
+                # 매핑된 스타일 적용
+                if style_type in style_mapping:
+                    style_file = style_mapping[style_type]
+                    style_path = os.path.join(os.getcwd(), "styles", f"{style_file}.json")
+                    
+                    with open(style_path, 'r', encoding='utf-8') as f:
+                        style_data = json.load(f)
+                    
+                    if self.apply_style_to_selection(style_data):
+                        print(f"✅ {start_line}~{end_line}행에 '{style_type}' 스타일 적용 완료")
+                        success_count += 1
+                
+                # 선택 해제
+                self.hwp.HAction.Run("Cancel")
+            
+            print(f"🎉 총 {success_count}개 구간에 스타일이 적용되었습니다!")
+            return success_count > 0
+            
+        except Exception as e:
+            print(f"❌ 자동 스타일 적용 실패: {e}")
+            return False
+
     def close_file(self):
         """안전한 파일 닫기"""
         if self.hwp and self.is_opened:
